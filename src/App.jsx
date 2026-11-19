@@ -59,13 +59,23 @@ function statusTone(p) {
   return 'neutral';
 }
 const geoCache = new Map();
+const GEO_STORAGE_KEY = 'meu-ap-geocodes-v2';
+try {
+  const saved = JSON.parse(localStorage.getItem(GEO_STORAGE_KEY) || '{}');
+  Object.entries(saved).forEach(([address, point]) => {
+    if (Array.isArray(point) && point.length === 2 && point.every(Number.isFinite)) geoCache.set(address, point);
+  });
+} catch { /* storage may be unavailable */ }
+function persistGeocodes() {
+  try { localStorage.setItem(GEO_STORAGE_KEY, JSON.stringify(Object.fromEntries(geoCache))); } catch { /* optional cache */ }
+}
 async function geocode(address) {
   if (geoCache.has(address)) return geoCache.get(address);
   const response = await fetch('https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=br&q=' + encodeURIComponent(address), { headers: {'Accept-Language':'pt-BR'} });
   if (!response.ok) return null;
   const hits = await response.json();
   const position = hits.length ? [Number(hits[0].lat), Number(hits[0].lon)] : null;
-  geoCache.set(address, position);
+  if (position) { geoCache.set(address, position); persistGeocodes(); }
   return position;
 }
 const pinIcon = (type, selected = false) => L.divIcon({
@@ -144,7 +154,8 @@ function Detail({ property:p, onClose, onMap, showMap, coordsAvailable }) {
 }
 export default function App() {
   const [properties,setProperties]=useState(()=>snapshot.map(normalize));
-  const [source,setSource]=useState('Prévia da planilha');
+  const [source,setSource]=useState('Carregando imóveis…');
+  const [loading,setLoading]=useState(true);
   const [search,setSearch]=useState('');
   const [bairro,setBairro]=useState('');
   const [sort,setSort]=useState('favorites');
@@ -160,28 +171,36 @@ export default function App() {
 
   useEffect(()=>{
     let alive=true;
-    fetch('/api/imoveis',{cache:'no-store'})
+    fetch('/api/imoveis')
       .then(r=>{if(!r.ok)throw Error('Integração indisponível');return r.json()})
       .then(json=>{if(alive&&Array.isArray(json.imoveis)){setProperties(json.imoveis.map(normalize).filter(p=>p.id));setSource('Planilha conectada')}})
-      .catch(()=>{});
+      .catch(()=>{if(alive)setSource('Prévia histórica · conexão indisponível')})
+      .finally(()=>{if(alive)setLoading(false)});
     return()=>{alive=false};
   },[]);
   useEffect(()=>{
     let alive=true;
+    // Show already-known pins immediately, without waiting for network geocoding.
+    const known={};
+    for(const p of properties){
+      if(p.latitude!==null && p.longitude!==null) known[p.id]=[p.latitude,p.longitude];
+      else if(p.endereco && !/não informado|não confirmado/i.test(p.endereco)){
+        const query=/fortaleza/i.test(p.endereco)?p.endereco:p.endereco+', Fortaleza, CE';
+        if(geoCache.has(query)) known[p.id]=geoCache.get(query);
+      }
+    }
+    setPositions(known);
     async function run(){
-      try{const point=await geocode(CORDEIRO_ADDRESS);if(alive&&point)setWork(point)}catch{}
+      try { const point=await geocode(CORDEIRO_ADDRESS);if(alive&&point)setWork(point); } catch {}
+      // Respect public Nominatim rate limits. Cached pins appear instantly.
       for(const property of properties){
         if(!alive)break;
-        if(property.latitude!==null && property.longitude!==null){
-          setPositions(prev=>({...prev,[property.id]:[property.latitude,property.longitude]}));
-          continue;
-        }
-        if(!property.endereco || /não informado|não confirmado/i.test(property.endereco)) continue;
-        try{
-          const query=/fortaleza/i.test(property.endereco)?property.endereco:property.endereco+', Fortaleza, CE';
+        if(known[property.id] || !property.endereco || /não informado|não confirmado/i.test(property.endereco)) continue;
+        const query=/fortaleza/i.test(property.endereco)?property.endereco:property.endereco+', Fortaleza, CE';
+        try {
           const point=await geocode(query);
           if(alive&&point)setPositions(prev=>({...prev,[property.id]:point}));
-        }catch{}
+        } catch {}
         await new Promise(resolve=>setTimeout(resolve,1150));
       }
     }
