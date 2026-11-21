@@ -174,7 +174,7 @@ export default function App() {
     fetch('/api/imoveis')
       .then(r=>{if(!r.ok)throw Error('Integração indisponível');return r.json()})
       .then(json=>{if(alive&&Array.isArray(json.imoveis)){setProperties(json.imoveis.map(normalize).filter(p=>p.id));setSource('Planilha conectada')}})
-      .catch(()=>{if(alive)setSource('Prévia histórica · conexão indisponível')})
+      .catch(()=>{if(alive)setSource('Dados sincronizados · conexão ao vivo indisponível')})
       .finally(()=>{if(alive)setLoading(false)});
     return()=>{alive=false};
   },[]);
